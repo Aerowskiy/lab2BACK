@@ -4,12 +4,43 @@ from datetime import datetime
 from lesson.schemas import UserSchema, CategorySchema, RecordSchema, IncomeAccountSchema
 from lesson.models import User, Category, Record, IncomeAccount
 from marshmallow.exceptions import ValidationError
+from flask_jwt_extended import JWTManager, jwt_required, create_access_token, jwt_required, verify_jwt_in_request, get_jwt_identity
+from passlib.hash import pbkdf2_sha256
 
 
+jwt = JWTManager(app)
 
 with app.app_context():
     db.create_all()
     db.session.commit()
+
+@jwt.expired_token_loader
+def expired_token_callback(jwt_header, jwt_payload):
+   return (
+       jsonify({"message": "The token has expired.", "error": "token_expired"}),
+       401,
+   )
+
+@jwt.invalid_token_loader
+def invalid_token_callback(error):
+   return (
+       jsonify(
+           {"message": "Signature verification failed.", "error": "invalid_token"}
+       ),
+       401,
+   )
+
+@jwt.unauthorized_loader
+def missing_token_callback(error):
+   return (
+       jsonify(
+           {
+               "description": "Request does not contain an access token.",
+               "error": "authorization_required",
+           }
+       ),
+       401,
+   )
 
 
 
@@ -24,13 +55,16 @@ def healthcheck():
     resp.status_code = 200
     return resp
 
-
-
-@app.route("/user/<int:user_id>", methods=['GET', 'DELETE'])
-def control_users():
+@app.route('/user/<int:user_id>', methods=['GET', 'DELETE'])
+def manage_user(user_id):
     with app.app_context():
+        jwt_claims = verify_jwt_in_request()
+        if jwt_claims is None:
+            return jsonify({'error': 'invalid token'}), 400
+        current_user_id = get_jwt_identity()
         user = User.query.get(user_id)
-
+        if current_user_id != user_id:
+            return jsonify({'error': 'Permission is invalid'}), 403
         if not user:
             return jsonify({'ERROR': f'User {user_id} does not exist'}), 404
 
@@ -55,8 +89,7 @@ def control_users():
                 return jsonify({'ERROR': str(e)}), 500
 
 
-
-@app.route('/user', methods=['POST'])
+@app.route('/user/reg', methods=['POST'])
 def create_user():
     data = request.get_json()
 
@@ -68,6 +101,7 @@ def create_user():
 
     new_user = User(
         username=user_data["username"],
+        password=pbkdf2_sha256.hash(user_data["password"]),
         income_account=IncomeAccount(**user_data.get("income_account", {}))
     )
 
@@ -83,17 +117,48 @@ def create_user():
         return jsonify(user_response), 200
 
 
+@app.route('/user/login', methods=['POST'])
+def login_user():
+    data = request.get_json()
+
+    user_schema = UserSchema()
+    try:
+        user_data = user_schema.load(data)
+    except ValidationError as err:
+        return jsonify({'ERROR': err.messages}), 400
+
+    username = user_data["username"]
+    provided_user_id = user_data["id"]
+
+    with app.app_context():
+        user = User.query.filter_by(id=provided_user_id, username=username).first()
+
+        if user:
+            is_valid_credentials = pbkdf2_sha256.verify(user_data["password"], user.password)
+
+            if provided_user_id is not None and is_valid_credentials:
+                # Password is valid
+                access_token = create_access_token(identity=user.id)
+                return jsonify({"NESSAGE": "Successful login", "token": access_token, "user_id": user.id}), 200
+            else:
+                # Invalid user ID, username, or password
+                return jsonify({"MESSAGE": "Unsuccessful login (invalid credentials)"}), 401
+        else:
+            # User not found
+            return jsonify({"MESSAGE": "Unsuccessful login (user not found)"}), 404
+
+
 @app.route('/users', methods=['GET'])
-def get_users():
+@jwt_required()
+def get_all_users():
     with app.app_context():
         users_data = {
             user.id: {"username": user.username} for user in User.query.all()
         }
         return jsonify(users_data)
 
-
-
 @app.route('/category', methods=['POST', 'GET'])
+@jwt_required()
 def manage_category():
     if request.method == 'GET':
         with app.app_context():
@@ -122,8 +187,8 @@ def manage_category():
 
             return jsonify(category_response), 200
 
-
 @app.route('/category/<int:cat_id>', methods=['DELETE'])
+@jwt_required()
 def delete_category(cat_id):
     with app.app_context():
         category = Category.query.get(cat_id)
@@ -135,8 +200,8 @@ def delete_category(cat_id):
         db.session.commit()
         return jsonify({'MESSAGE': f'Category {cat_id} deleted'}), 200
 
-
 @app.route('/records', methods=['GET'])
+@jwt_required()
 def get_all_records():
     with app.app_context():
         records_data = {
@@ -144,7 +209,7 @@ def get_all_records():
                 {
                     "id": record.id,
                     "user_id": record.user_id,
-                    "category_id": record.category_id,
+                    "cat_id": record.category_id,
                     "amount": record.amount,
                     "created_at": record.created_at
                 } for record in Record.query.all()
@@ -154,6 +219,7 @@ def get_all_records():
 
 
 @app.route('/record/<int:record_id>', methods=['GET', 'DELETE'])
+@jwt_required()
 def manage_record(record_id):
     with app.app_context():
         record = Record.query.get(record_id)
@@ -177,7 +243,9 @@ def manage_record(record_id):
             return jsonify({'MESSAGE': f'Record {record_id} deleted'}), 200
 
 
+
 @app.route('/record', methods=['POST', 'GET'])
+@jwt_required()
 def manage_records():
     if request.method == 'GET':
         user_id = request.args.get('user_id')
@@ -239,7 +307,7 @@ def manage_records():
             record_response = {
                 "id": new_record.id,
                 "user_id": new_record.user_id,
-                "cat_id": new_record.category_id,
+                "category_id": new_record.category_id,
                 "amount": new_record.amount
             }
 

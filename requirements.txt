@@ -20,3 +20,11 @@ webargs==8.3.0
 Werkzeug==2.3.7
 Api==0.0.7
 flask-restx==1.3.0
+passlib==1.7.4
+psycopg2==2.9.9
+PyJWT==2.8.0
+pytz==2023.3.post1
+six==1.16.0
+SQLAlchemy==2.0.23
+typing_extensions==4.9.0
+Werkzeug==3.0.1
